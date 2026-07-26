@@ -1,144 +1,204 @@
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
+#include <IRremote.hpp>
+#include "BluetoothSerial.h"
 
-// Definición de pines según el esquemático de Sandro
-#define PIN_EMISORES 22   // Q5 - Driver de emisores
-#define SENSOR_IR_1 34    // S1 (Oponente 1)
-#define SENSOR_IR_2 39    // S2 (Pin VN - Oponente 2)
-#define SENSOR_IR_3 36    // S3 (Pin VP - Oponente 3)
+// ==========================================
+// PINES
+// ==========================================
+#define PIN_IR 4      
+#define PIN_BOTON 23  // KEY2
 
-BLEServer *pServer = NULL;
-BLECharacteristic * pTxCharacteristic;
-bool deviceConnected = false;
-bool emisoresEncendidos = true;
+// Semáforo
+#define LED1 19 // Rojo: Esperando (Desarmado)
+#define LED2 18 // Verde: Activo (Armado)
+#define LED3 21 // Azul: Motor en movimiento
+
+// Motores
+#define PWMA 33 
+#define AIN1 26
+#define AIN2 25
+#define PWMB 13 
+#define BIN1 27
+#define BIN2 14 
+
+// ==========================================
+// VARIABLES Y OBJETOS
+// ==========================================
+BluetoothSerial SerialBT;
+
+bool sandroArmado = false;      
+bool motorEnMovimiento = false;   
+
+// Velocidad base para pruebas
+int velocidadLenta = 50; 
+
+// Control de parpadeo del LED
 unsigned long tiempoAnterior = 0;
-
-// UUIDs estándar de "Nordic UART" (Los que usan las apps de terminal BLE)
-#define SERVICE_UUID           "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
-#define CHARACTERISTIC_UUID_RX "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
-#define CHARACTERISTIC_UUID_TX "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
-
-class MyServerCallbacks: public BLEServerCallbacks {
-    void onConnect(BLEServer* pServer) {
-      deviceConnected = true;
-    };
-    void onDisconnect(BLEServer* pServer) {
-      deviceConnected = false;
-      pServer->startAdvertising(); 
-    }
-};
-
-class MyCallbacks: public BLECharacteristicCallbacks {
-    void onWrite(BLECharacteristic *pCharacteristic) {
-      String rxValue = String(pCharacteristic->getValue().c_str());
-      if (rxValue.length() > 0) {
-        char comando = rxValue[0];
-        if (comando == '1') {
-          emisoresEncendidos = true;
-          digitalWrite(PIN_EMISORES, HIGH);
-        } else if (comando == '0') {
-          emisoresEncendidos = false;
-          digitalWrite(PIN_EMISORES, LOW);
-        }
-      }
-    }
-};
+bool estadoLED3 = false;
 
 void setup() {
-  Serial.begin(115200);
-  pinMode(PIN_EMISORES, OUTPUT);
-  pinMode(SENSOR_IR_1, INPUT);
-  pinMode(SENSOR_IR_2, INPUT);
-  pinMode(SENSOR_IR_3, INPUT);
+  // Inicializamos Bluetooth
+  SerialBT.begin("Sandro_BT");
+  
+  // LEDs
+  pinMode(LED1, OUTPUT);
+  pinMode(LED2, OUTPUT);
+  pinMode(LED3, OUTPUT);
 
-  // Encendemos los emisores por defecto
-  digitalWrite(PIN_EMISORES, HIGH);
+  // ESTADO INICIAL
+  digitalWrite(LED1, HIGH);
+  digitalWrite(LED2, LOW);
+  digitalWrite(LED3, LOW);
 
-  // --- CONFIGURACIÓN BLE ---
-  BLEDevice::init("Sandro_BLE");
-  pServer = BLEDevice::createServer();
-  pServer->setCallbacks(new MyServerCallbacks());
+  // Motores
+  pinMode(PWMA, OUTPUT);
+  pinMode(AIN1, OUTPUT);
+  pinMode(AIN2, OUTPUT);
+  pinMode(PWMB, OUTPUT);
+  pinMode(BIN1, OUTPUT);
+  pinMode(BIN2, OUTPUT);
+  detenerMotores();
 
-  BLEService *pService = pServer->createService(SERVICE_UUID);
-
-  // Característica para ENVIAR datos al celular (TX)
-  pTxCharacteristic = pService->createCharacteristic(
-                        CHARACTERISTIC_UUID_TX,
-                        BLECharacteristic::PROPERTY_NOTIFY
-                      );
-  pTxCharacteristic->addDescriptor(new BLE2902());
-
-  // Característica para RECIBIR comandos del celular (RX)
-  BLECharacteristic * pRxCharacteristic = pService->createCharacteristic(
-                                            CHARACTERISTIC_UUID_RX,
-                                            BLECharacteristic::PROPERTY_WRITE
-                                          );
-  pRxCharacteristic->setCallbacks(new MyCallbacks());
-
-  pService->start();
-  pServer->getAdvertising()->start();
-  Serial.println(">>> Sandro_BLE está listo para conectarse al iPhone! <<<");
+  // BOTÓN e IR
+  pinMode(PIN_BOTON, INPUT);
+  IrReceiver.begin(PIN_IR, DISABLE_LED_FEEDBACK);
 }
 
 void loop() {
-  if (deviceConnected) {
-    unsigned long tiempoActual = millis();
-    
-    // Actualizamos cada 2000 ms (2 segundos) sin congelar la placa
-    if (tiempoActual - tiempoAnterior >= 2000) { 
-      tiempoAnterior = tiempoActual;
-
-      // 1. APAGAR Y DAR ESPACIO AL SENSOR PARA DESCARGARSE
-      digitalWrite(PIN_EMISORES, LOW);
-      delay(50); 
+  // ==============================================================
+  // 1. LECTURA DEL PULSADOR (ARMADO / DESARMADO)
+  // ==============================================================
+  if (digitalRead(PIN_BOTON) == HIGH) {
+    delay(50); 
+    if (digitalRead(PIN_BOTON) == HIGH) {
       
-      int s1_off = analogRead(SENSOR_IR_1);
-      int s2_off = analogRead(SENSOR_IR_2);
-      int s3_off = analogRead(SENSOR_IR_3);
-
-      int señal_S1 = 0;
-      int señal_S2 = 0;
-      int señal_S3 = 0;
-
-      // 2. LECTURA CON REBOTE
-      if (emisoresEncendidos) {
-        digitalWrite(PIN_EMISORES, HIGH);
-        delay(5); 
-        int s1_on = analogRead(SENSOR_IR_1);
-        int s2_on = analogRead(SENSOR_IR_2);
-        int s3_on = analogRead(SENSOR_IR_3);
-
-        // 3. LA MATEMÁTICA: Aislar solo nuestra propia luz
-        señal_S1 = max(0, s1_on - s1_off);
-        señal_S2 = max(0, s2_on - s2_off);
-        señal_S3 = max(0, s3_on - s3_off);
-        
-        // --- FILTRO DE RUIDO (UMBRAL) ---
-        int umbral_ruido = 100;
-        if (señal_S1 < umbral_ruido) señal_S1 = 0;
-        if (señal_S2 < umbral_ruido) señal_S2 = 0;
-        if (señal_S3 < umbral_ruido) señal_S3 = 0;
-
-        digitalWrite(PIN_EMISORES, HIGH); 
+      sandroArmado = !sandroArmado; 
+      
+      if (sandroArmado) {
+        digitalWrite(LED1, LOW);   
+        digitalWrite(LED2, HIGH);  
+        SerialBT.println("\n[SISTEMA] SANDRO ARMADO - Esperando comandos IR...");
       } else {
-        digitalWrite(PIN_EMISORES, LOW);
+        detenerMotores();
+        motorEnMovimiento = false;
+        digitalWrite(LED1, HIGH);  
+        digitalWrite(LED2, LOW);
+        digitalWrite(LED3, LOW);
+        SerialBT.println("\n[SISTEMA] SANDRO DESARMADO - Motores bloqueados.");
       }
-
-      // 4. ENVIAR DATOS AL CELULAR
-      String estado = emisoresEncendidos ? "ON" : "OFF";
       
-      String mensaje = String("--- SEÑAL LIMPIA ---\n") +
-                       "EMISORES: " + estado + "\n" +
-                       "I: " + String(señal_S1) + "\n" +
-                       "C: " + String(señal_S2) + "\n" +
-                       "D: " + String(señal_S3) + "\n----------------\n";
-
-      pTxCharacteristic->setValue(mensaje.c_str());
-      pTxCharacteristic->notify();
+      while(digitalRead(PIN_BOTON) == HIGH); 
     }
   }
-  
-  delay(10); 
+
+  // ==============================================================
+  // 2. ESTADO: ARMADO Y ESCUCHANDO IR
+  // ==============================================================
+  if (sandroArmado) {
+    
+    if (IrReceiver.decode()) {
+      uint32_t codigo_recibido = IrReceiver.decodedIRData.decodedRawData;
+      
+      if (codigo_recibido != 0) {
+        
+        switch(codigo_recibido) {
+          case 0xE619FF00: // Vol+
+            SerialBT.println("-> Comando: AVANZAR CONTINUO");
+            motorEnMovimiento = true;
+            avanzar(velocidadLenta);
+            break;
+
+          case 0xE916FF00: // Vol-
+            SerialBT.println("-> Comando: RETROCEDER CONTINUO");
+            motorEnMovimiento = true;
+            retroceder(velocidadLenta);
+            break;
+
+          case 0xEA15FF00: // CH+
+            SerialBT.println("-> Comando: GIRO DERECHA (90 grados) Y AVANZA");
+            motorEnMovimiento = true;
+            girarDerecha(velocidadLenta);
+            delay(300); // El tiempo que tarda en hacer los 90 grados
+            avanzar(velocidadLenta); // Retoma el avance
+            SerialBT.println("   [Retomando avance automatico]");
+            break;
+
+          case 0xF807FF00: // CH-
+            SerialBT.println("-> Comando: GIRO IZQUIERDA (90 grados) Y AVANZA");
+            motorEnMovimiento = true;
+            girarIzquierda(velocidadLenta);
+            delay(300); // El tiempo que tarda en hacer los 90 grados
+            avanzar(velocidadLenta); // Retoma el avance
+            SerialBT.println("   [Retomando avance automatico]");
+            break;
+
+          case 0xF609FF00: // Play
+            SerialBT.println("-> Comando: STOP / DETENER");
+            detenerMotores();
+            motorEnMovimiento = false;
+            break;
+            
+          default:
+            SerialBT.print("Codigo no asignado: 0x");
+            SerialBT.println(codigo_recibido, HEX);
+            break;
+        }
+      }
+      
+      delay(150);
+      IrReceiver.resume();
+    }
+
+    // ==============================================================
+    // 3. EFECTO VISUAL: PARPADEO LED3 (Baliza de movimiento)
+    // ==============================================================
+    if (motorEnMovimiento) {
+      if (millis() - tiempoAnterior >= 150) { 
+        tiempoAnterior = millis();
+        estadoLED3 = !estadoLED3; 
+        digitalWrite(LED3, estadoLED3);
+      }
+    } else {
+      digitalWrite(LED3, LOW); // Aseguramos que se apague si no se mueve
+    }
+  }
+}
+
+// ==========================================
+// FUNCIONES DE MOVIMIENTO
+// ==========================================
+void avanzar(int velocidad) {
+  analogWrite(PWMA, velocidad);
+  analogWrite(PWMB, velocidad);
+  digitalWrite(AIN1, HIGH); digitalWrite(AIN2, LOW);
+  digitalWrite(BIN1, LOW); digitalWrite(BIN2, HIGH);
+}
+
+void retroceder(int velocidad) {
+  analogWrite(PWMA, velocidad);
+  analogWrite(PWMB, velocidad);
+  digitalWrite(AIN1, LOW); digitalWrite(AIN2, HIGH);
+  digitalWrite(BIN1, HIGH); digitalWrite(BIN2, LOW);
+}
+
+void girarDerecha(int velocidad) {
+  // Motor Izquierdo (A) avanza, Motor Derecho (B) retrocede
+  analogWrite(PWMA, velocidad);
+  analogWrite(PWMB, velocidad);
+  digitalWrite(AIN1, HIGH); digitalWrite(AIN2, LOW);
+  digitalWrite(BIN1, HIGH); digitalWrite(BIN2, LOW); // B retrocede
+}
+
+void girarIzquierda(int velocidad) {
+  // Motor Izquierdo (A) retrocede, Motor Derecho (B) avanza
+  analogWrite(PWMA, velocidad);
+  analogWrite(PWMB, velocidad);
+  digitalWrite(AIN1, LOW); digitalWrite(AIN2, HIGH);
+  digitalWrite(BIN1, LOW); digitalWrite(BIN2, HIGH); // B avanza
+}
+
+void detenerMotores() {
+  analogWrite(PWMA, 0);
+  analogWrite(PWMB, 0);
+  digitalWrite(AIN1, LOW); digitalWrite(AIN2, LOW);
+  digitalWrite(BIN1, LOW); digitalWrite(BIN2, LOW);
 }
