@@ -40,13 +40,42 @@ int estrategiaSeleccionada = 0; // Guardará el número de la estrategia
 // EL SEGURO DE LOS MOTORES: 
 // 0 = Totalmente inmovilizado (Seguro para probar sensores).
 // 150 = Límite seguro para probar empuje.
-int LIMITE_PWM = 40;
+int LIMITE_PWM = 150;
 
+int VEL_BUSQUEDA_E3 = 50;
+int VEL_ATAQUE_E3 = 90;
+int VEL_GIRO_E3 = 40;
 // Detección de oponente por sustracción ON/OFF del emisor. Cada
 // llamada apaga el emisor, mide el ruido ambiental, prende el emisor,
 // mide de nuevo, y usa la diferencia. Esto cancela la luz ambiental
 // en cada ciclo (no hace falta calibrar una vez al arrancar).
-int UMBRAL_RUIDO = 100;
+//
+// Contra rivales negro mate la señal útil es chica, así que en vez de
+// un umbral fijo para los 3 sensores, cada uno tiene su propio piso
+// de ruido medido en el arranque (con la mesa vacía) y el umbral se
+// calcula apenas por encima de eso. Así se puede bajar mucho la
+// sensibilidad sin que el ruido eléctrico de cada canal dispare
+// falsos positivos.
+int umbralIzq = 100;
+int umbralCen = 100;
+int umbralDer = 100;
+
+// Muestras promediadas por cada lectura ON/OFF. Más muestras = menos
+// ruido = umbral más bajo posible, a costa de un ciclo un poco más
+// lento (cada muestra tarda ~4ms por el delay de asentamiento).
+#define MUESTRAS_SENSOR 4
+
+// Cuántas lecturas seguidas por encima del umbral hacen falta para
+// aceptar una detección como real (filtra picos aislados de ruido).
+#define CONFIRMACIONES_REQUERIDAS 1
+int confirmacionesIzq = 0, confirmacionesCen = 0, confirmacionesDer = 0;
+
+// "Memoria" de la última dirección detectada: si el rival cae
+// momentáneamente en el hueco ciego entre dos sensores, mantenemos
+// la última dirección conocida en vez de perderlo de vista al toque.
+#define MEMORIA_DETECCION_MS 250
+int ultimaPosDetectada = 0;
+unsigned long tiempoUltimaDeteccion = 0;
 
 // Guardamos la última señal calculada de cada sensor para poder
 // mandarla por telemetría sin tener que volver a leer.
@@ -149,6 +178,11 @@ void setup() {
     
     IrReceiver.begin(PIN_RECEPTOR_IR, DISABLE_LED_FEEDBACK);
 
+    // Medimos el piso de ruido real de cada sensor (mesa vacía) y
+    // fijamos el umbral apenas por encima. IMPORTANTE: al prender el
+    // robot no debe haber nada cerca de los sensores.
+    calibrarUmbrales();
+
     Serial.println("Sandro v1.5 Inicializado. Esperando órdenes...");
 }
 
@@ -187,6 +221,13 @@ void loop() {
                     digitalWrite(LED_CEN, HIGH);
                     enviarMensajeBLE("Estrategia 2 (Patrulla Borde). Esperando PLAY...");
                 }                
+                else if (codigo == 0xA15EFF00) { // BOTON 3 
+                    estrategiaSeleccionada = 3;
+                    estadoRobot = 1; 
+                    digitalWrite(LED_DER, HIGH);
+                    digitalWrite(LED_IZQ, HIGH); 
+                    enviarMensajeBLE("Ataque progresivo. Esperando PLAY...");
+                }
                 else if (codigo == 0xBC43FF00) { // BOTON "E/R" 
                     estadoRobot = 3; 
                     digitalWrite(LED_DER, HIGH); 
@@ -244,6 +285,7 @@ void loop() {
             if (estadoRobot == 2) {
                 if (estrategiaSeleccionada == 1) rutinaBusquedaDeAPoco();
                 else if (estrategiaSeleccionada == 2) rutinaPatrullaYAtaca();
+                else if (estrategiaSeleccionada == 3) rutinaAtaqueProgresivo();
             }
             break;
             
@@ -333,66 +375,153 @@ void rutinaPatrullaYAtaca() {
 }
 
 // ==================================================
-// Lectura de sensores de oponente
+// ESTRATEGIA 3: Busqueda Progresiva
 // ==================================================
-int leerSensorPromediado(int pin) {
-    // Se mantiene disponible por si la necesitás para debug, pero
-    // buscarOponente() ya no la usa (ver técnica ON/OFF más abajo).
-    long suma = 0;
-    const int muestras = 4;
-    for (int k = 0; k < muestras; k++) {
-        suma += analogRead(pin);
+void rutinaAtaqueProgresivo() {
+    int pos = buscarOponente(); 
+
+    if (pos == 0) {
+        // No ve a nadie -> patrón de búsqueda, pero sin "delay()"
+        // para poder seguir revisando sensores y control remoto.
+        unsigned long ahora = millis();
+        switch (faseBusqueda) {
+            case 0: // girar un poco
+                moverMotores(VEL_BUSQUEDA_E3, -VEL_BUSQUEDA_E3);
+                if (ahora - tiempoBusqueda >= 100) { faseBusqueda = 1; tiempoBusqueda = ahora; }
+                break;
+            case 1: // avanzar un poco
+                moverMotores(VEL_BUSQUEDA_E3, VEL_BUSQUEDA_E3);
+                if (ahora - tiempoBusqueda >= 50) { faseBusqueda = 2; tiempoBusqueda = ahora; }
+                break;
+            case 2: // pausa breve
+                moverMotores(0, 0);
+                if (ahora - tiempoBusqueda >= 20) { faseBusqueda = 0; tiempoBusqueda = ahora; }
+                break;
+        }
+    } 
+    else if (pos == 2) { // CENTRO -> Ataque de frente
+        moverMotores(VEL_ATAQUE_E3, VEL_ATAQUE_E3);
     }
-    return suma / muestras;
+    else if (pos == 1) { // IZQUIERDA -> Gira Izquierda hasta centrarlo
+        moverMotores(-VEL_GIRO_E3, VEL_GIRO_E3); 
+    }
+    else if (pos == 3) { // DERECHA -> Gira Derecha hasta centrarlo
+        moverMotores(VEL_GIRO_E3, -VEL_GIRO_E3);
+    }
 }
 
-void calibrarSensores() {
-    // Ya no hace falta con la técnica ON/OFF: se "recalibra" sola en
-    // cada lectura. Se deja vacía por compatibilidad.
+// ==================================================
+// Lectura de sensores de oponente
+// ==================================================
+// Lee un sensor N veces y promedia, para bajar el ruido del ADC.
+int leerPromedio(int pin) {
+    long suma = 0;
+    for (int k = 0; k < MUESTRAS_SENSOR; k++) {
+        suma += analogRead(pin);
+    }
+    return suma / MUESTRAS_SENSOR;
+}
+
+// Hace una lectura ON/OFF completa (promediada) y devuelve la señal
+// resultante de cada sensor, sin aplicar todavía ningún umbral.
+void medirSeñalesCrudas(int &i, int &c, int &d) {
+    digitalWrite(PIN_EMISORES, LOW);
+    delay(4); // asentamiento del fototransistor
+    int s1_off = leerPromedio(SENSOR_IZQ);
+    int s2_off = leerPromedio(SENSOR_CEN);
+    int s3_off = leerPromedio(SENSOR_DER);
+    
+    digitalWrite(PIN_EMISORES, HIGH);
+    delay(4);
+    int s1_on = leerPromedio(SENSOR_IZQ);
+    int s2_on = leerPromedio(SENSOR_CEN);
+    int s3_on = leerPromedio(SENSOR_DER);
+
+    i = max(0, s1_on - s1_off);
+    c = max(0, s2_on - s2_off);
+    d = max(0, s3_on - s3_off);
+}
+
+// Mide el piso de ruido real de cada sensor (con la mesa vacía) y fija
+// el umbral de detección apenas por encima. Se toman varias rondas y
+// se usa el pico más alto de ruido visto, para no quedar justo al
+// límite.
+void calibrarUmbrales() {
+    int maxI = 0, maxC = 0, maxD = 0;
+    for (int ronda = 0; ronda < 20; ronda++) {
+        int i, c, d;
+        medirSeñalesCrudas(i, c, d);
+        if (i > maxI) maxI = i;
+        if (c > maxC) maxC = c;
+        if (d > maxD) maxD = d;
+    }
+    // Margen de seguridad sobre el pico de ruido medido.
+    umbralIzq = maxI + 25;
+    umbralCen = maxC + 25;
+    umbralDer = maxD + 25;
+
+    enviarMensajeBLE("Umbrales calibrados I:" + String(umbralIzq) +
+                      " C:" + String(umbralCen) + " D:" + String(umbralDer));
 }
 
 int buscarOponente() {
-    // 1. Emisor APAGADO -> medimos solo ruido ambiental
-    digitalWrite(PIN_EMISORES, LOW);
-    delay(2);
-    int s1_off = analogRead(SENSOR_IZQ);
-    int s2_off = analogRead(SENSOR_CEN);
-    int s3_off = analogRead(SENSOR_DER);
-
-    // 2. Emisor ENCENDIDO -> medimos ambiental + reflejo del emisor
-    digitalWrite(PIN_EMISORES, HIGH);
-    delay(2);
-    int s1_on = analogRead(SENSOR_IZQ);
-    int s2_on = analogRead(SENSOR_CEN);
-    int s3_on = analogRead(SENSOR_DER);
-
-    // 3. La diferencia aísla SOLO lo que aportó nuestro propio emisor,
-    // cancelando la luz ambiental de ese instante.
-    int i = max(0, s1_on - s1_off);
-    int c = max(0, s2_on - s2_off);
-    int d = max(0, s3_on - s3_off);
-
-    if (i < UMBRAL_RUIDO) i = 0;
-    if (c < UMBRAL_RUIDO) c = 0;
-    if (d < UMBRAL_RUIDO) d = 0;
+    int i, c, d;
+    medirSeñalesCrudas(i, c, d);
 
     señalIzqActual = i;
     señalCenActual = c;
     señalDerActual = d;
 
-    if (i == 0 && c == 0 && d == 0) {
-        return 0; // Nadie cerca
+    bool detectaI = i >= umbralIzq;
+    bool detectaC = c >= umbralCen;
+    bool detectaD = d >= umbralDer;
+
+    // Exigimos varias lecturas seguidas por encima del umbral antes
+    // de confiar en la detección (filtra picos aislados de ruido,
+    // algo más probable ahora que los umbrales son bajos).
+    confirmacionesIzq = detectaI ? confirmacionesIzq + 1 : 0;
+    confirmacionesCen = detectaC ? confirmacionesCen + 1 : 0;
+    confirmacionesDer = detectaD ? confirmacionesDer + 1 : 0;
+
+    bool confirmaI = confirmacionesIzq >= CONFIRMACIONES_REQUERIDAS;
+    bool confirmaC = confirmacionesCen >= CONFIRMACIONES_REQUERIDAS;
+    bool confirmaD = confirmacionesDer >= CONFIRMACIONES_REQUERIDAS;
+
+    if (!confirmaI && !confirmaC && !confirmaD) {
+        // Nadie confirmado en ESTE ciclo. Pero si hace poquito sí
+        // tuvimos al rival detectado, probablemente sigue ahí y solo
+        // cayó en el hueco ciego entre dos haces de sensores. En ese
+        // caso mantenemos la última dirección un instante en vez de
+        // resetear a modo búsqueda de golpe.
+        if (millis() - tiempoUltimaDeteccion < MEMORIA_DETECCION_MS) {
+            return ultimaPosDetectada;
+        }
+        return 0; // Ya pasó el margen de gracia: asumimos que no hay nadie
     }
 
-    // Gana el sensor con MAYOR señal (el que más reflejo recibió)
-    if (c >= i && c >= d) return 2; // Centro
-    if (i >= c && i >= d) return 1; // Izquierda
-    if (d >= c && d >= i) return 3; // Derecha
+    // Entre los confirmados, gana el que tiene mayor señal relativa
+    // a su propio umbral (más "margen" de detección = más cerca).
+    int margenI = confirmaI ? (i - umbralIzq) : -1;
+    int margenC = confirmaC ? (c - umbralCen) : -1;
+    int margenD = confirmaD ? (d - umbralDer) : -1;
 
-    return 0; 
+    int pos = 0;
+    if (margenC >= margenI && margenC >= margenD) pos = 2; // Centro
+    else if (margenI >= margenC && margenI >= margenD) pos = 1; // Izquierda
+    else if (margenD >= margenC && margenD >= margenI) pos = 3; // Derecha
+
+    ultimaPosDetectada = pos;
+    tiempoUltimaDeteccion = millis();
+    return pos; 
 }
 
 void moverMotores(int velIzq, int velDer) {
+    // FIX: los motores están cableados invertidos (lo que el código
+    // manda como "adelante" gira físicamente hacia atrás). En vez de
+    // recablear, compensamos acá invirtiendo el signo una sola vez.
+    velIzq = -velIzq;
+    velDer = -velDer;
+
     if (velIzq > LIMITE_PWM) velIzq = LIMITE_PWM;
     if (velIzq < -LIMITE_PWM) velIzq = -LIMITE_PWM;
     if (velDer > LIMITE_PWM) velDer = LIMITE_PWM;

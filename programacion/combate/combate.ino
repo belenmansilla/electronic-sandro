@@ -40,7 +40,7 @@ int estrategiaSeleccionada = 0; // Guardará el número de la estrategia
 // EL SEGURO DE LOS MOTORES: 
 // 0 = Totalmente inmovilizado (Seguro para probar sensores).
 // 150 = Límite seguro para probar empuj.
-int LIMITE_PWM = 255;
+int LIMITE_PWM = 40;
 
 BLEServer* pServer = NULL;
 BLECharacteristic* pCharacteristicTX = NULL; // Le cambiamos el nombre a TX
@@ -136,23 +136,18 @@ void setup() {
 void loop() {
     unsigned long tiempoActual = millis();
     if (tiempoActual - tiempoAnteriorBLE >= 1000) {
-        tiempoAnteriorBLE = tiempoActual; // Reseteamos el cronómetro
+        tiempoAnteriorBLE = tiempoActual; 
         
-        if (estadoRobot == 3) {
-            // Si estamos en telemetría, leemos y mandamos los sensores acá
-            int linIzq = digitalRead(PIN_LINEA_IZQ);
-            int linDer = digitalRead(PIN_LINEA_DER);
-            int opIzq = analogRead(SENSOR_IZQ);
-            int opCen = analogRead(SENSOR_CEN);
-            int opDer = analogRead(SENSOR_DER);
+        int linIzq = digitalRead(PIN_LINEA_IZQ);
+        int linDer = digitalRead(PIN_LINEA_DER);
+        int opIzq = analogRead(SENSOR_IZQ);
+        int opCen = analogRead(SENSOR_CEN);
+        int opDer = analogRead(SENSOR_DER);
 
-            String telemetria = "Lin[I:" + String(linIzq) + " D:" + String(linDer) + "] " +
-                                "Op[I:" + String(opIzq) + " C:" + String(opCen) + " D:" + String(opDer) + "]";
-            enviarMensajeBLE(telemetria);
-        } else {
-            // Si estamos en otro estado, mandamos el ping de menú
-            enviarMensajeBLE("Sandro -> Estado: " + String(estadoRobot) + " | Estrat: " + String(estrategiaSeleccionada));
-        }
+        String telemetria = "E:" + String(estadoRobot) + 
+                            " L[" + String(linIzq) + "|" + String(linDer) + "] " +
+                            "Op[I:" + String(opIzq) + " C:" + String(opCen) + " D:" + String(opDer) + "]";
+        enviarMensajeBLE(telemetria);
     }
 
     switch (estadoRobot) {
@@ -163,24 +158,24 @@ void loop() {
         case 0: 
             if (IrReceiver.decode()) {
                 uint32_t codigo = IrReceiver.decodedIRData.decodedRawData;
-                enviarMensajeBLE(">>> Botón IR detectado: " + String(codigo, HEX));
 
-                if (codigo == 0xF30CFF00) { // Botón "1"
+
+                if (codigo == 0xF30CFF00) { // BOTON 1
                     estrategiaSeleccionada = 1;
                     estadoRobot = 1; 
                     digitalWrite(LED_IZQ, HIGH); 
-                    enviarMensajeBLE("¡Estrategia 1 Cargada! Esperando PLAY...");
+                    enviarMensajeBLE("Estrategia 1 (Busqueda Lenta). Esperando PLAY...");
                 }
                 else if (codigo == 0xE718FF00) { // BOTON 2
                     estrategiaSeleccionada = 2;
                     estadoRobot = 1; 
                     digitalWrite(LED_CEN, HIGH);
-                    enviarMensajeBLE("¡Estrategia 2 (Borde) Cargada! Esperando PLAY...");
+                    enviarMensajeBLE("Estrategia 2 (Patrulla Borde). Esperando PLAY...");
                 }                
                 else if (codigo == 0xBC43FF00) { // BOTON "E/R" 
                     estadoRobot = 3; 
                     digitalWrite(LED_DER, HIGH); 
-                    enviarMensajeBLE("Cambiando a Telemetría de Sensores...");
+                    enviarMensajeBLE("Telemetría Exclusiva (Motores bloqueados)");
                 }
                 IrReceiver.resume(); // Prepara el receptor para el próximo botón
             }
@@ -215,51 +210,40 @@ void loop() {
             break;
 
         // ==================================================
-        // ESTADO 2: MODO COMBATE (Acá ya no importa el control)
+        // ESTADO 2: MODO COMBATE
         // ==================================================
         case 2: 
-                if (IrReceiver.decode()) {
+            if (IrReceiver.decode()) {
                 uint32_t codigo = IrReceiver.decodedIRData.decodedRawData;
                 
-                if (codigo == 0xBC43FF00) { // Botón E/R (Ir a Telemetría)
-                    moverMotores(0, 0);     // Freno de emergencia
-                    estadoRobot = 3; 
-                    digitalWrite(LED_DER, HIGH); 
-                    enviarMensajeBLE("Combate abortado. Entrando a Telemetría.");
-                }
-                else if (codigo == 0xF30CFF00) { // Botón 1 (Volver al menú principal)
+                if (codigo == 0xF609FF00 || codigo == 0xF30CFF00 || codigo == 0xBC43FF00) { 
                     moverMotores(0, 0);
                     estadoRobot = 0;
-                    digitalWrite(LED_IZQ, LOW); 
-                    digitalWrite(LED_CEN, LOW);
-                    enviarMensajeBLE("Combate abortado. Volviendo al menú.");
+                    digitalWrite(LED_IZQ, LOW); digitalWrite(LED_CEN, LOW); digitalWrite(LED_DER, LOW);
+                    enviarMensajeBLE("¡ROBOT DETENIDO!");
                 }
                 IrReceiver.resume();
             }
             
-            // Evaluamos las estrategias directamente
-            if (estrategiaSeleccionada == 1) {
-                rutinaBusquedaDeAPoco();
+            // Lógica de Combate
+            if (estadoRobot == 2) {
+                if (estrategiaSeleccionada == 1) rutinaBusquedaDeAPoco();
+                else if (estrategiaSeleccionada == 2) rutinaPatrullaYAtaca();
             }
-            else if (estrategiaSeleccionada == 2) {
-                rutinaPruebaBorde();
-            }
-            
-            // } // Cierre del else comentado
             break;
             
         // ==================================================
-        // ESTADO 3: TELEMETRÍA POR BLUETOOTH (CALIBRACIÓN)
+        // ESTADO 3: TELEMETRÍA POR BLUETOOTH 
         // ==================================================
         case 3:
         // El estado 3 ahora queda libre de interrupciones.
             // Solo escucha si querés salir de la telemetría.
+            moverMotores(0, 0);
             if (IrReceiver.decode()) {
                 uint32_t codigo = IrReceiver.decodedIRData.decodedRawData;
-                if (codigo == 0xF30CFF00) { // Botón "1" para volver al Menú
-                    estadoRobot = 0; 
-                    digitalWrite(LED_DER, LOW); 
-                    enviarMensajeBLE("Saliendo de telemetría. Volviendo al menú.");
+                if (codigo == 0xF30CFF00 || codigo == 0xF609FF00) { // Botón "1" o "PLAY" para salir
+                    estadoRobot = 0; digitalWrite(LED_DER, LOW); 
+                    enviarMensajeBLE("Saliendo de telemetría.");
                 }
                 IrReceiver.resume();
             }
@@ -268,149 +252,96 @@ void loop() {
 }
 
 void rutinaBusquedaDeAPoco() {
-    int posicionOponente = buscarOponente(); // Le preguntamos a los sensores IR
+    int pos = buscarOponente(); 
 
-    if (posicionOponente == 0) {
-        // NO VEMOS A NADIE -> Buscamos "de a poco"
-        // (Estos números de velocidad y delay los vas a tener que calibrar en la pista)
-        
-        moverMotores(150, -150); // Gira a la derecha un poco
-        delay(100);             // Mantiene el giro por 100ms
-        
-        moverMotores(100, 100);  // Avanza un poquito hacia adelante
-        delay(50);              // Mantiene el avance por 50ms
-        
-        moverMotores(0, 0);      // Frena un instante para estabilizar la lectura IR
-        delay(20);
+    if (pos == 0) {
+        // No ve a nadie -> Gira lento, avanza un poco
+        moverMotores(120, -120); delay(100);             
+        moverMotores(80, 80);    delay(50);             
+        moverMotores(0, 0);      delay(20);
     } 
-    else if (posicionOponente == 2) {
-        // LO VEMOS EN EL CENTRO -> ¡Ataque a fondo!
+    else if (pos == 2) { // CENTRO -> Ataque
         moverMotores(255, 255);
     }
-    else if (posicionOponente == 1) {
-        // LO VEMOS A LA IZQUIERDA -> Tracking (corrección suave)
-        moverMotores(100, 200); 
+    else if (pos == 1) { // IZQUIERDA -> Gira Izquierda
+        moverMotores(-120, 120); 
     }
-    else if (posicionOponente == 3) {
-        // LO VEMOS A LA DERECHA -> Tracking (corrección suave)
-        moverMotores(200, 100);
+    else if (pos == 3) { // DERECHA -> Gira Derecha
+        moverMotores(120, -120);
+    }
+}
+
+void rutinaPatrullaYAtaca() {
+    // 1. PRIORIDAD ABSOLUTA: No caerse de la mesa (Línea Negra = 1)
+    int lineaIzq = digitalRead(PIN_LINEA_IZQ);
+    int lineaDer = digitalRead(PIN_LINEA_DER);
+    
+    if (lineaIzq == 1 || lineaDer == 1) {
+        moverMotores(-100, -100); delay(200); // Retrocede
+        moverMotores(100, -100);  delay(300); // Gira
+        return; // Corta la función acá para no ejecutar lo de abajo
+    }
+
+    // 2. Si el piso es seguro, buscamos oponente
+    int pos = buscarOponente(); 
+
+    if (pos == 2) { // Lo ve de frente
+        moverMotores(255, 255);
+    }
+    else if (pos == 1) { // Lo ve a la Izquierda
+        moverMotores(-120, 120); 
+    }
+    else if (pos == 3) { // Lo ve a la Derecha
+        moverMotores(120, -120);
+    }
+    else { // No ve a nadie, avanza suave patrullando
+        moverMotores(60, 60);
     }
 }
 
 int buscarOponente() {
-    // 1. Leemos el voltaje de los 3 sensores analógicos.
-    // En el ESP32, analogRead devuelve un número de 0 a 4095.
-    int lecturaIzq = analogRead(SENSOR_IZQ);
-    int lecturaCen = analogRead(SENSOR_CEN);
-    int lecturaDer = analogRead(SENSOR_DER);
-
-    // 2. Definimos nuestro "umbral". 
-    // Como los fototransistores bajan su voltaje cuando detectan el reflejo
-    // del infrarrojo, un valor MENOR a 2000 significa que hay un oponente cerca.
+    int i = analogRead(SENSOR_IZQ);
+    int c = analogRead(SENSOR_CEN);
+    int d = analogRead(SENSOR_DER);
     int umbral = 2000;
 
-    // 3. Evaluamos por prioridad (El centro es el más importante para atacar)
-    if (lecturaCen < umbral) {
-        return 2; // ¡Lo vemos de frente! Devolvemos un 2 y la función termina acá.
+    // Si todos están por encima del umbral, no hay nadie cerca
+    if (i > umbral && c > umbral && d > umbral) {
+        return 0; 
     }
-    else if (lecturaIzq < umbral) {
-        return 1; // ¡Lo vemos a la izquierda! Devolvemos un 1.
-    }
-    else if (lecturaDer < umbral) {
-        return 3; // ¡Lo vemos a la derecha! Devolvemos un 3.
-    }
-
-    // 4. Si pasamos todos los 'if' y ninguno vio nada...
-    return 0; // Devolvemos un 0 (No hay nadie).
-}
-
-bool leerSensoresLinea() {
-    int lineaIzq = digitalRead(PIN_LINEA_IZQ);
-    int lineaDer = digitalRead(PIN_LINEA_DER);
-
-    // Si cualquiera de los dos sensores lee 0 (blanco), devolvemos verdadero (hay peligro)
-    if (lineaIzq == 0 || lineaDer == 0) {
-        return true; 
-    } else {
-        return false;
-    }
-}
-
-void rutinaEscape() {
-    // 1. Frenamos y retrocedemos rápido a máxima potencia
-    moverMotores(-255, -255);
-    delay(250); // Mantenemos el retroceso por un cuarto de segundo
     
-    // 2. Giramos en el lugar para volver a apuntar al centro del dohyo
-    // Motor Izq adelante, Motor Der atrás
-    moverMotores(200, -200);
-    delay(150); 
+    // Si llegamos acá, al menos uno cruzó el umbral. 
+    // ¿Cuál tiene el valor MAS BAJO (El oponente está más cerca de él)?
+    if (c <= i && c <= d) return 2; // El Centro es el más bajo
+    if (i <= c && i <= d) return 1; // La Izquierda es el más bajo
+    if (d <= c && d <= i) return 3; // La Derecha es el más bajo
     
+    return 0; 
 }
 
 void moverMotores(int velIzq, int velDer) {
-    // 1. Recortamos la velocidad si supera el LIMITE_PWM permitido
     if (velIzq > LIMITE_PWM) velIzq = LIMITE_PWM;
     if (velIzq < -LIMITE_PWM) velIzq = -LIMITE_PWM;
-    
     if (velDer > LIMITE_PWM) velDer = LIMITE_PWM;
     if (velDer < -LIMITE_PWM) velDer = -LIMITE_PWM;
 
-    // --- CONTROL MOTOR IZQUIERDO (Motor B) ---
+    // --- Motor Izquierdo (B) ---
     if (velIzq >= 0) {
-        digitalWrite(BIN1, HIGH);
-        digitalWrite(BIN2, LOW);
-        analogWrite(PWMB, velIzq);
+        digitalWrite(BIN1, HIGH); digitalWrite(BIN2, LOW); analogWrite(PWMB, velIzq);
     } else {
-        digitalWrite(BIN1, LOW);
-        digitalWrite(BIN2, HIGH);
-        analogWrite(PWMB, -velIzq); 
+        digitalWrite(BIN1, LOW); digitalWrite(BIN2, HIGH); analogWrite(PWMB, -velIzq); 
     }
-
-    // --- CONTROL MOTOR DERECHO (Motor A) ---
+    // --- Motor Derecho (A) ---
     if (velDer >= 0) {
-        digitalWrite(AIN1, HIGH);
-        digitalWrite(AIN2, LOW);
-        analogWrite(PWMA, velDer);
+        digitalWrite(AIN1, HIGH); digitalWrite(AIN2, LOW); analogWrite(PWMA, velDer);
     } else {
-        digitalWrite(AIN1, LOW);
-        digitalWrite(AIN2, HIGH);
-        analogWrite(PWMA, -velDer);
-    }
-}
-
-void rutinaPruebaBorde() {
-    int lineaIzq = digitalRead(PIN_LINEA_IZQ);
-    int lineaDer = digitalRead(PIN_LINEA_DER);
-
-    // Lógica invertida para la mesa casera: 0 es seguro (blanco), 1 es peligro (negro)
-    if (lineaIzq == 1 || lineaDer == 1) {
-        // ¡Tocó la cinta negra! 
-        
-        // 1. Retrocedemos un poquito para alejarnos del borde y no caernos al girar
-        moverMotores(-70, -70);
-        delay(200); // 200 milisegundos yendo para atrás
-        
-        // 2. Giramos a la derecha en su propio eje (Motor Izq adelante, Motor Der atrás)
-        moverMotores(70, -70);
-        delay(300); // Mantiene el giro por 300 milisegundos
-        
-        // 3. Frenamos un instante cortito para estabilizar la inercia
-        moverMotores(0, 0);
-        delay(50);
-        
-        // Al terminar esto, la función termina y el código vuelve arriba.
-        // Como ya no está sobre la línea negra, va a entrar al "else" y seguir avanzando.
-    } 
-    else {
-        // Sigue en lo blanco de la mesa, avanza lento y parejo
-        moverMotores(70, 70);
+        digitalWrite(AIN1, LOW); digitalWrite(AIN2, HIGH); analogWrite(PWMA, -velDer);
     }
 }
 
 void enviarMensajeBLE(String mensaje) {
     if (deviceConnected) {
-        mensaje += "\n"; // Salto de línea automático
+        mensaje += "\n"; 
         pCharacteristicTX->setValue(mensaje.c_str());
         pCharacteristicTX->notify();
     }
