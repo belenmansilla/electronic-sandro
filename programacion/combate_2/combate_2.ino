@@ -6,10 +6,10 @@
 #include <BLE2902.h>
 
 // ==========================================
-// 1. CONFIGURACIÓN DE HARDWARE (Sandro v1.5)
+// 1. CONFIGURACIÓN DE HARDWARE
 // ==========================================
 
-// --- PINES DE MOTORES (Driver TB6612FNG) ---
+// --- PINES DE MOTORES ---
 #define PWMA 32           // PWM Motor Derecho
 #define AIN1 26           // Dirección 1 Motor Derecho
 #define AIN2 25           // Dirección 2 Motor Derecho
@@ -37,14 +37,14 @@
 int estadoRobot = 0;           // Arranca en 0 (Esperando selección)
 int estrategiaSeleccionada = 0; // Guardará el número de la estrategia
 
-// EL SEGURO DE LOS MOTORES: 
-// 0 = Totalmente inmovilizado (Seguro para probar sensores).
-// 150 = Límite seguro para probar empuje.
+// Motores Limite
 int LIMITE_PWM = 150;
 
+// Motores estrategias
 int VEL_BUSQUEDA_E3 = 50;
 int VEL_ATAQUE_E3 = 90;
 int VEL_GIRO_E3 = 40;
+
 // Detección de oponente por sustracción ON/OFF del emisor. Cada
 // llamada apaga el emisor, mide el ruido ambiental, prende el emisor,
 // mide de nuevo, y usa la diferencia. Esto cancela la luz ambiental
@@ -61,8 +61,7 @@ int umbralCen = 100;
 int umbralDer = 100;
 
 // Muestras promediadas por cada lectura ON/OFF. Más muestras = menos
-// ruido = umbral más bajo posible, a costa de un ciclo un poco más
-// lento (cada muestra tarda ~4ms por el delay de asentamiento).
+// ruido = umbral más bajo posible
 #define MUESTRAS_SENSOR 4
 
 // Cuántas lecturas seguidas por encima del umbral hacen falta para
@@ -83,8 +82,10 @@ int señalIzqActual = 0;
 int señalCenActual = 0;
 int señalDerActual = 0;
 
-BLEServer* pServer = NULL;
-BLECharacteristic* pCharacteristicTX = NULL;
+
+// Bluetooth configurado para el celu desde la app 
+BLEServer* pServer = NULL;  //activo el servidor
+BLECharacteristic* pCharacteristicTX = NULL; //aca le digo que voy a estar guardando una configuracion gigante de bluetooth.
 bool deviceConnected = false;
 
 unsigned long tiempoAnteriorBLE = 0;
@@ -93,10 +94,12 @@ unsigned long tiempoAnteriorBLE = 0;
 unsigned long tiempoBusqueda = 0;
 int faseBusqueda = 0; // 0=girar, 1=avanzar, 2=pausa
 
+// para que la app Bluefruit Connect
 #define SERVICE_UUID           "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CHARACTERISTIC_UUID_RX "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CHARACTERISTIC_UUID_TX "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 
+// publicarse cuando desconecto del bluetooth
 class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
       deviceConnected = true;
@@ -166,12 +169,6 @@ void setup() {
     digitalWrite(LED_CEN, LOW);
     digitalWrite(LED_DER, LOW);
 
-    // *** FIX PRINCIPAL ***
-    // Los sensores de oponente son reflectivos: necesitan el emisor IR
-    // encendido para poder "ver". Antes se dejaba en LOW y nunca se
-    // volvía a tocar, por eso las lecturas eran básicamente ruido.
-    digitalWrite(PIN_EMISORES, HIGH);
-    
     // Estado seguro inicial: emisor apagado. buscarOponente() lo
     // prende/apaga solo en cada lectura (técnica ON/OFF).
     digitalWrite(PIN_EMISORES, LOW);
@@ -203,7 +200,7 @@ void loop() {
     switch (estadoRobot) {
         
         // ==================================================
-        // ESTADO 0: ESPERANDO QUE ELIJAS LA ESTRATEGIA (1 al 9)
+        // ESTADO 0: ESPERANDO QUE ESTRATEGIAS DEL 1 AL 9
         // ==================================================
         case 0: 
             if (IrReceiver.decode()) {
@@ -211,7 +208,7 @@ void loop() {
 
                 if (codigo == 0xF30CFF00) { // BOTON 1
                     estrategiaSeleccionada = 1;
-                    estadoRobot = 1; 
+                    estadoRobot = 1; // estado de busqueda hasta el "play"
                     digitalWrite(LED_IZQ, HIGH); 
                     enviarMensajeBLE("Estrategia 1 (Busqueda Lenta). Esperando PLAY...");
                 }
@@ -238,7 +235,7 @@ void loop() {
             break;
 
         // ==================================================
-        // ESTADO 1: ESPERANDO EL BOTÓN "PLAY" PARA ARRANCAR
+        // ESTADO 1: ARRANQUE NORMAL
         // ==================================================
         case 1: 
             if (IrReceiver.decode()) {
@@ -247,7 +244,7 @@ void loop() {
                 if (codigo == 0xF609FF00) { // Si apretaste "PLAY"
                     digitalWrite(LED_IZQ, LOW); 
                     digitalWrite(LED_CEN, LOW);
-                    enviarMensajeBLE("¡INICIANDO EN 5 SEGUNDOS!");
+                    enviarMensajeBLE("¡INICIANDO EN 5 SEGUNDOS!"); // por regla de LNR
                     
                     for(int i = 0; i < 10; i++) {
                         digitalWrite(LED_CEN, HIGH);
@@ -266,7 +263,7 @@ void loop() {
             break;
 
         // ==================================================
-        // ESTADO 2: MODO COMBATE
+        // ESTADO 2: MODO COMBATE POR ESTRATEGIA 
         // ==================================================
         case 2: 
             if (IrReceiver.decode()) {
@@ -343,7 +340,7 @@ void rutinaBusquedaDeAPoco() {
 }
 
 // ==================================================
-// ESTRATEGIA 2: Patrulla el tatami, esquiva el borde,
+// ESTRATEGIA 2: Patrulla el dohyo, esquiva el borde,
 // e interrumpe la patrulla si detecta oponente
 // ==================================================
 void rutinaPatrullaYAtaca() {
@@ -424,7 +421,7 @@ int leerPromedio(int pin) {
 
 // Hace una lectura ON/OFF completa (promediada) y devuelve la señal
 // resultante de cada sensor, sin aplicar todavía ningún umbral.
-void medirSeñalesCrudas(int &i, int &c, int &d) {
+void medirSenalesCrudas(int &i, int &c, int &d) {
     digitalWrite(PIN_EMISORES, LOW);
     delay(4); // asentamiento del fototransistor
     int s1_off = leerPromedio(SENSOR_IZQ);
@@ -443,14 +440,12 @@ void medirSeñalesCrudas(int &i, int &c, int &d) {
 }
 
 // Mide el piso de ruido real de cada sensor (con la mesa vacía) y fija
-// el umbral de detección apenas por encima. Se toman varias rondas y
-// se usa el pico más alto de ruido visto, para no quedar justo al
-// límite.
+// el umbral de detección apenas por encima
 void calibrarUmbrales() {
     int maxI = 0, maxC = 0, maxD = 0;
     for (int ronda = 0; ronda < 20; ronda++) {
         int i, c, d;
-        medirSeñalesCrudas(i, c, d);
+        medirSenalesCrudas(i, c, d);
         if (i > maxI) maxI = i;
         if (c > maxC) maxC = c;
         if (d > maxD) maxD = d;
@@ -466,7 +461,7 @@ void calibrarUmbrales() {
 
 int buscarOponente() {
     int i, c, d;
-    medirSeñalesCrudas(i, c, d);
+    medirSenalesCrudas(i, c, d); // esta funcion me da los datos limpios
 
     señalIzqActual = i;
     señalCenActual = c;
@@ -500,7 +495,7 @@ int buscarOponente() {
     }
 
     // Entre los confirmados, gana el que tiene mayor señal relativa
-    // a su propio umbral (más "margen" de detección = más cerca).
+    // [Condición a evaluar] ? [Valor si es VERDADERO] : [Valor si es FALSO];
     int margenI = confirmaI ? (i - umbralIzq) : -1;
     int margenC = confirmaC ? (c - umbralCen) : -1;
     int margenD = confirmaD ? (d - umbralDer) : -1;
