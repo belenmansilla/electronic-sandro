@@ -4,7 +4,7 @@ Sandro es un robot minisumo autónomo diseñado y construido desde cero para com
 
 ## 📋 Especificaciones Técnicas
 
-El hardware de Sandro está diseñado en una placa PCB artesanal de simple faz (FR4), fabricada con el método de cloruro férrico, y va montada sobre un chasis impreso en 3D.
+El hardware de Sandro está diseñado en una placa PCB artesanal de simple faz, fabricada con el método de cloruro férrico, y va montada sobre un chasis impreso en 3D.
 
 * **Microcontrolador:** ESP32-DEVKIT (30 pines) operando a 3.3V.
 * **Tracción:** Motores DC N30 con caja reductora (500 RPM) configurados en tracción diferencial.
