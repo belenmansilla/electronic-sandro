@@ -1,4 +1,4 @@
-# 🤖 Sandro - Robot Minisumo Autónomo
+# 🌹 Sandro - Robot Minisumo Autónomo
 
 Sandro es un robot minisumo autónomo diseñado y construido desde cero para competencias de robótica. Este repositorio contiene el código fuente, la lógica de control y la documentación técnica de la versión 1.5 del proyecto.
 
