@@ -31,10 +31,11 @@
 #define PIN_LINEA_DER 17    // SL2 (TX2)
 
 // --- INTERFAZ ---
-#define PIN_RECEPTOR_IR 4   // VS1838B (Árbitro)
+#define PIN_RECEPTOR_IR 4   // VS1838B
 #define LED_IZQ 18          // L1
 #define LED_CEN 19          // L2
 #define LED_DER 21          // L3
+#define PIN_PULSADOR 23
 
 #define LECTURA_MAXIMA_PLAUSIBLE 400
 
@@ -201,6 +202,7 @@ void setup() {
     pinMode(BIN2, OUTPUT);
 
     // 3. Configurar salidas de interfaz y emisores
+    pinMode(PIN_PULSADOR, INPUT_PULLUP);
     pinMode(PIN_EMISORES, OUTPUT);
     pinMode(LED_IZQ, OUTPUT);
     pinMode(LED_CEN, OUTPUT);
