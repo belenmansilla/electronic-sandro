@@ -1,5 +1,5 @@
 // ==========================================
-// PULSADOR ACTIVO -> RECIBE SEÑAL DE CONTROL PARA QUE VAYA PARA ADELANTE Y PARA ATRÁS 
+// PULSADOR ACTIVO -> RECIBE SEÑAL DE CONTROL PARA ADELANTE, ATRAS, IZQUIERDA Y DERECHA
 // ==========================================
 
 #include <IRremote.hpp>
@@ -24,30 +24,35 @@
 #define BIN2 14 
 
 // ==========================================
+// CODIGOS IR (mismos botones que ya documentaste)
+// ==========================================
+#define CODIGO_ADELANTE  0xE619FF00
+#define CODIGO_ATRAS     0xE916FF00
+#define CODIGO_IZQUIERDA 0xF807FF00
+#define CODIGO_DERECHA   0xEA15FF00
+#define CODIGO_PLAY      0xF609FF00   // ahora funciona como freno/STOP
+
+// ==========================================
 // VARIABLES
 // ==========================================
 bool sandroArmado = false;      
-bool moviendoAdelante = true;     
 bool motorEnMovimiento = false;   
 
-// ¡Velocidad al mínimo! (Ajustar si el motor zumba pero no gira)
-int velocidadLenta = 60;          
+int velocidadLenta = 60;   // avanzar / retroceder
+int velocidadGiro  = 60;   // izquierda / derecha (podés separarla si querés otra velocidad)
 
 unsigned long tiempoAnterior = 0;
 bool estadoLED3 = false;
 
 void setup() {
-  // LEDs
   pinMode(LED1, OUTPUT);
   pinMode(LED2, OUTPUT);
   pinMode(LED3, OUTPUT);
 
-  // ESTADO INICIAL: Sandro Desarmado
   digitalWrite(LED1, HIGH);
   digitalWrite(LED2, LOW);
   digitalWrite(LED3, LOW);
 
-  // Motores apagados
   pinMode(PWMA, OUTPUT);
   pinMode(AIN1, OUTPUT);
   pinMode(AIN2, OUTPUT);
@@ -56,10 +61,8 @@ void setup() {
   pinMode(BIN2, OUTPUT);
   detenerMotores();
 
-  // BOTÓN
   pinMode(PIN_BOTON, INPUT);
   
-  // IR
   IrReceiver.begin(PIN_IR, DISABLE_LED_FEEDBACK);
 }
 
@@ -96,15 +99,26 @@ void loop() {
     if (IrReceiver.decode()) {
       uint32_t codigo_recibido = IrReceiver.decodedIRData.decodedRawData;
       
-      if (codigo_recibido ==  0xF609FF00) {
-        motorEnMovimiento = true; 
-        
-        if (moviendoAdelante) {
-          avanzar(velocidadLenta);
-        } else {
-          retroceder(velocidadLenta);
-        }
-        moviendoAdelante = !moviendoAdelante; 
+      if (codigo_recibido == CODIGO_ADELANTE) {
+        avanzar(velocidadLenta);
+        motorEnMovimiento = true;
+      }
+      else if (codigo_recibido == CODIGO_ATRAS) {
+        retroceder(velocidadLenta);
+        motorEnMovimiento = true;
+      }
+      else if (codigo_recibido == CODIGO_IZQUIERDA) {
+        girarIzquierda(velocidadGiro);
+        motorEnMovimiento = true;
+      }
+      else if (codigo_recibido == CODIGO_DERECHA) {
+        girarDerecha(velocidadGiro);
+        motorEnMovimiento = true;
+      }
+      else if (codigo_recibido == CODIGO_PLAY) {
+        detenerMotores();
+        motorEnMovimiento = false;
+        digitalWrite(LED3, LOW);
       }
       
       delay(200);
@@ -123,17 +137,15 @@ void loop() {
 }
 
 // ==========================================
-// FUNCIONES DE MOVIMIENTO (CORREGIDAS POR SOFTWARE)
+// FUNCIONES DE MOVIMIENTO
 // ==========================================
 void avanzar(int velocidad) {
   analogWrite(PWMA, velocidad);
   analogWrite(PWMB, velocidad);
   
-  // Motor A normal
   digitalWrite(AIN1, HIGH);
   digitalWrite(AIN2, LOW);
   
-  // Motor B invertido por software para que acompañe al A
   digitalWrite(BIN1, LOW);
   digitalWrite(BIN2, HIGH);
 }
@@ -142,13 +154,35 @@ void retroceder(int velocidad) {
   analogWrite(PWMA, velocidad);
   analogWrite(PWMB, velocidad);
   
-  // Motor A invertido
   digitalWrite(AIN1, LOW);
   digitalWrite(AIN2, HIGH);
   
-  // Motor B normal (lo invertimos respecto a avanzar)
   digitalWrite(BIN1, HIGH);
   digitalWrite(BIN2, LOW);
+}
+
+void girarIzquierda(int velocidad) {
+  analogWrite(PWMA, velocidad);
+  analogWrite(PWMB, velocidad);
+
+  // Motor derecho (A) hacia adelante + izquierdo (B) hacia atrás -> pivota a la izquierda
+  digitalWrite(AIN1, HIGH);
+  digitalWrite(AIN2, LOW);
+
+  digitalWrite(BIN1, HIGH);
+  digitalWrite(BIN2, LOW);
+}
+
+void girarDerecha(int velocidad) {
+  analogWrite(PWMA, velocidad);
+  analogWrite(PWMB, velocidad);
+
+  // Motor derecho (A) hacia atrás + izquierdo (B) hacia adelante -> pivota a la derecha
+  digitalWrite(AIN1, LOW);
+  digitalWrite(AIN2, HIGH);
+
+  digitalWrite(BIN1, LOW);
+  digitalWrite(BIN2, HIGH);
 }
 
 void detenerMotores() {

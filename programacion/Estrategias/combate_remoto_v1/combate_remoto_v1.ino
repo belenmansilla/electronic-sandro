@@ -682,4 +682,351 @@ void rutinaSeguimiento() {
     if (faseE4 == 0) { // LEER Y DECIDIR
         int pos = buscarOponenteSuave();
 
-        // Debounce: solo confiamos en una
+        // Debounce: solo confiamos en una lectura no-cero si se repite
+        // dos veces seguidas. Si cambia o desaparece, arranca de nuevo.
+        if (pos != 0 && pos == ultimaLecturaE4) {
+            lecturasConsecutivasE4++;
+        } else {
+            lecturasConsecutivasE4 = (pos != 0) ? 1 : 0;
+        }
+        ultimaLecturaE4 = pos;
+
+        if (pos == 0) {
+            // Nadie detectado: barrido suave buscando, igual que antes
+            if (ahora - tiempoBarrido > TIEMPO_BARRIDO_E4_MS) {
+                direccionBarrido = -direccionBarrido;
+                tiempoBarrido = ahora;
+            }
+            if (direccionBarrido == 1) {
+                moverMotores(VEL_SEGUIMIENTO_E4, VEL_SEGUIMIENTO_E4 - VEL_CORRECCION_BARRIDO_E4);
+            } else {
+                moverMotores(VEL_SEGUIMIENTO_E4 - VEL_CORRECCION_BARRIDO_E4, VEL_SEGUIMIENTO_E4);
+            }
+            return;
+        }
+
+        if (lecturasConsecutivasE4 < LECTURAS_PARA_CONFIRMAR) {
+            // Todavía no confirmamos: no tomamos ninguna decisión nueva
+            // (se mantiene el último comando de motores del ciclo anterior)
+            return;
+        }
+
+        // Lectura confirmada -> decidimos
+        lecturasConsecutivasE4 = 0;
+        if (pos == 2) {
+            moverMotores(VEL_SEGUIMIENTO_E4, VEL_SEGUIMIENTO_E4); // de frente, directo
+        } else {
+            direccionE4 = pos; // 1 = izquierda, 3 = derecha
+            faseE4 = 1;
+            tiempoFaseE4 = ahora;
+        }
+    }
+    else if (faseE4 == 1) { // GIRO DECISIVO EN EL LUGAR
+        if (direccionE4 == 1) moverMotores(VEL_GIRO, -VEL_GIRO);
+        else                  moverMotores(-VEL_GIRO, VEL_GIRO);
+
+        if (ahora - tiempoFaseE4 >= DURACION_GIRO_SEGUIMIENTO_MS) {
+            faseE4 = 2;
+            tiempoFaseE4 = ahora;
+        }
+    }
+    else if (faseE4 == 2) { // AVANZAR DERECHO TRAS EL GIRO
+        moverMotores(VEL_SEGUIMIENTO_E4, VEL_SEGUIMIENTO_E4);
+        if (ahora - tiempoFaseE4 >= DURACION_AVANCE_SEGUIMIENTO_MS) {
+            faseE4 = 0;
+        }
+    }
+}
+
+
+// ==================================================
+// ESTRATEGIA 5: Seguimiento con giro decisivo
+// ==================================================
+void rutinaEmbestidaAgresiva() {
+    int lineaIzq = digitalRead(PIN_LINEA_IZQ);
+    int lineaDer = digitalRead(PIN_LINEA_DER);
+    if (lineaIzq == SENSOR_LINEA || lineaDer == SENSOR_LINEA) {
+        moverMotores(-100, -100); delay(200);
+        moverMotores(100, -100);  delay(300);
+        faseE5 = 0;
+        lecturasConsecutivasE5 = 0;
+        return;
+    }
+
+    unsigned long ahora = millis();
+
+    if (faseE5 == 0) { // LEER Y DECIDIR (igual a E4)
+        int pos = buscarOponenteSuave();
+
+        if (pos != 0 && pos == ultimaLecturaE5) lecturasConsecutivasE5++;
+        else lecturasConsecutivasE5 = (pos != 0) ? 1 : 0;
+        ultimaLecturaE5 = pos;
+
+        if (pos == 0) {
+            if (ahora - tiempoBarrido > TIEMPO_BARRIDO_E5_MS) {
+                direccionBarrido = -direccionBarrido;
+                tiempoBarrido = ahora;
+            }
+            if (direccionBarrido == 1) moverMotores(VEL_SEGUIMIENTO_E5, VEL_SEGUIMIENTO_E5 - VEL_CORRECCION_BARRIDO_E5);
+            else moverMotores(VEL_SEGUIMIENTO_E5 - VEL_CORRECCION_BARRIDO_E5, VEL_SEGUIMIENTO_E5);
+            return;
+        }
+
+        if (lecturasConsecutivasE5 < LECTURAS_PARA_CONFIRMAR) return;
+
+        lecturasConsecutivasE5 = 0;
+        if (pos == 2) {
+            faseE5 = 3;              // <-- acá está la diferencia con la 4: entra a EMBESTIDA
+            tiempoFaseE5 = ahora;
+        } else {
+            direccionE5 = pos;
+            faseE5 = 1;
+            tiempoFaseE5 = ahora;
+        }
+    }
+    else if (faseE5 == 1) { // GIRO (igual a E4)
+        if (direccionE5 == 1) moverMotores(VEL_GIRO, -VEL_GIRO);
+        else moverMotores(-VEL_GIRO, VEL_GIRO);
+        if (ahora - tiempoFaseE5 >= DURACION_GIRO_SEGUIMIENTO_MS) {
+            faseE5 = 2;
+            tiempoFaseE5 = ahora;
+        }
+    }
+    else if (faseE5 == 2) { // AVANZAR TRAS GIRO (igual a E4)
+        moverMotores(VEL_SEGUIMIENTO_E5, VEL_SEGUIMIENTO_E5);
+        if (ahora - tiempoFaseE5 >= DURACION_AVANCE_SEGUIMIENTO_MS) faseE5 = 0;
+    }
+    else if (faseE5 == 3) { // EMBESTIDA: rampa de velocidad mientras siga de frente
+        int pos = buscarOponenteSuave();
+        if (pos == 2) {
+            unsigned long transcurrido = ahora - tiempoFaseE5;
+            if (transcurrido > (unsigned long)TIEMPO_RAMPA_EMBESTIDA_MS) transcurrido = TIEMPO_RAMPA_EMBESTIDA_MS;
+            int velocidadActual = VEL_SEGUIMIENTO_E5 +
+                (long)(VEL_EMBESTIDA_MAX - VEL_SEGUIMIENTO_E5) * transcurrido / TIEMPO_RAMPA_EMBESTIDA_MS;
+            moverMotores(velocidadActual, velocidadActual);
+        } else {
+            faseE5 = 0;
+            lecturasConsecutivasE5 = 0;
+        }
+    }
+}
+
+// ==================================================
+// ESTRATEGIA 6: Baile del cuadrado
+// ==================================================
+
+void rutinaCuadrado() {
+    int lineaIzq = digitalRead(PIN_LINEA_IZQ);
+    int lineaDer = digitalRead(PIN_LINEA_DER);
+    if (lineaIzq == SENSOR_LINEA || lineaDer == SENSOR_LINEA) {
+        moverMotores(-100, -100); delay(200);
+        moverMotores(100, -100);  delay(300);
+        faseE6 = 0;
+        return;
+    }
+
+    unsigned long ahora = millis();
+
+    if (faseE6 == 0) { // AVANZAR UN LADO DEL CUADRADO
+        int pos = buscarOponente();
+        if (pos == 2) {
+            faseE6 = 2; // lo tiene de frente: interrumpe el recorrido y empuja
+            return;
+        }
+        moverMotores(VEL_BUSQUEDA_E1, VEL_BUSQUEDA_E1);
+        if (ahora - tiempoFaseE6 >= DURACION_AVANCE_CUADRADO_MS) {
+            faseE6 = 1;
+            tiempoFaseE6 = ahora;
+        }
+    }
+    else if (faseE6 == 1) { // GIRO DE 90° (siempre para el mismo lado)
+        moverMotores(VEL_GIRO, -VEL_GIRO);
+        if (ahora - tiempoFaseE6 >= DURACION_GIRO_90_MS) {
+            faseE6 = 0;
+            tiempoFaseE6 = ahora;
+        }
+    }
+    else if (faseE6 == 2) { // EMPUJE, igual que la fase 3 de E1
+        int pos = buscarOponente();
+        if (pos == 2) {
+            moverMotores(VEL_ATAQUE_E1, VEL_ATAQUE_E1);
+        } else {
+            faseE6 = 0;
+            tiempoFaseE6 = ahora; // retoma el recorrido, tramo recto desde cero
+        }
+    }
+}
+
+// ==================================================
+// ESTRATEGIA 7: Control Remoto Manual (sin sensores)
+// ==================================================
+void rutinaControlRemoto() {
+    unsigned long ahora = millis();
+
+    // Seguridad: si no llega ni un comando ni un "repeat" en este tiempo,
+    // frena solo (por si perdés señal del control).
+    if (ahora - tiempoUltimoComandoRemoto > TIEMPO_TIMEOUT_REMOTO_MS) {
+        comandoControlRemoto = 0;
+    }
+
+    switch (comandoControlRemoto) {
+        case 1: moverMotores(VEL_AVANCE_REMOTO, VEL_AVANCE_REMOTO);   break; // Adelante
+        case 2: moverMotores(-VEL_AVANCE_REMOTO, -VEL_AVANCE_REMOTO); break; // Atras
+        case 3: moverMotores(VEL_GIRO_REMOTO, -VEL_GIRO_REMOTO);      break; // Izquierda
+        case 4: moverMotores(-VEL_GIRO_REMOTO, VEL_GIRO_REMOTO);      break; // Derecha
+        default: moverMotores(0, 0); break;
+    }
+}
+// ==================================================
+// 3: Resto funciones
+// ==================================================
+
+// lee n veces y me da el promedio para bajar le ruido
+int leerPromedio(int pin) {
+    long suma = 0;
+    for (int k = 0; k < MUESTRAS_SENSOR; k++) {
+        suma += analogRead(pin);
+    }
+    return suma / MUESTRAS_SENSOR;
+}
+
+// Hace una lectura ON/OFF completa (promediada) y devuelve la señal
+// resultante de cada sensor, sin aplicar todavía ningún umbral.
+void medirSenalesCrudas(int &i, int &c, int &d) {
+    digitalWrite(PIN_EMISORES, LOW);
+    delay(4); // asentamiento del fototransistor
+    int s1_off = leerPromedio(SENSOR_IZQ);
+    int s2_off = leerPromedio(SENSOR_CEN);
+    int s3_off = leerPromedio(SENSOR_DER);
+    
+    digitalWrite(PIN_EMISORES, HIGH);
+    delay(4);
+    int s1_on = leerPromedio(SENSOR_IZQ);
+    int s2_on = leerPromedio(SENSOR_CEN);
+    int s3_on = leerPromedio(SENSOR_DER);
+
+    i = max(0, s1_on - s1_off);
+    c = max(0, s2_on - s2_off);
+    d = max(0, s3_on - s3_off);
+
+    // NUEVO: cualquier lectura por encima de este techo es ruido
+    // eléctrico, no una señal real — la descartamos.
+    if (i > LECTURA_MAXIMA_PLAUSIBLE) i = 0;
+    if (c > LECTURA_MAXIMA_PLAUSIBLE) c = 0;
+    if (d > LECTURA_MAXIMA_PLAUSIBLE) d = 0;
+}
+
+//repite 20 veces el sañeles crudas
+void calibrarUmbrales() {
+    int maxI = 0, maxC = 0, maxD = 0;
+    for (int ronda = 0; ronda < 20; ronda++) {
+        int i, c, d;
+        medirSenalesCrudas(i, c, d);
+        if (i > maxI) maxI = i;
+        if (c > maxC) maxC = c;
+        if (d > maxD) maxD = d;
+    }
+    // Margen de seguridad sobre el pico de ruido medido.
+    umbralIzq = maxI + 25;
+    umbralCen = maxC + 25;
+    umbralDer = maxD + 25;
+
+    enviarMensajeBLE("Umbrales calibrados I:" + String(umbralIzq) +
+                      " C:" + String(umbralCen) + " D:" + String(umbralDer));
+}
+
+// compara las señales crudas y compara con su propio umbral, luego da la direcion si lo supera
+int buscarOponente() {
+    int i, c, d;
+    medirSenalesCrudas(i, c, d);
+
+    señalIzqActual = i;
+    señalCenActual = c;
+    señalDerActual = d;
+
+    bool detectaI = i >= umbralIzq;
+    bool detectaC = c >= umbralCen;
+    bool detectaD = d >= umbralDer;
+
+    if (!detectaI && !detectaC && !detectaD) {
+        return 0; // nadie detectado
+    }
+
+    int margenI = detectaI ? (i - umbralIzq) : -1;
+    int margenC = detectaC ? (c - umbralCen) : -1;
+    int margenD = detectaD ? (d - umbralDer) : -1;
+
+    if (margenC >= margenI && margenC >= margenD) return 2; // Centro
+    if (margenI >= margenC && margenI >= margenD) return 1; // Izquierda
+    if (margenD >= margenC && margenD >= margenI) return 3; // Derecha
+
+    return 0;
+}
+
+// Casi idéntica a buscarOponente(), pero mezcla la lectura nueva con el 40% del historial antes de comparar contra el umbral (promedio exponencial), para que un parpadeo puntual no borre al rival de la lectura de golpe. 
+int buscarOponenteSuave() {
+    int i, c, d;
+    medirSenalesCrudas(i, c, d);
+
+    // Promedio exponencial: 60% la lectura nueva, 40% el historial.
+    señalIzqSuave = (i * 0.6) + (señalIzqSuave * 0.4);
+    señalCenSuave = (c * 0.6) + (señalCenSuave * 0.4);
+    señalDerSuave = (d * 0.6) + (señalDerSuave * 0.4);
+
+    // Igual que buscarOponente(), pero usando los valores suavizados.
+    bool detectaI = señalIzqSuave >= umbralIzq;
+    bool detectaC = señalCenSuave >= umbralCen;
+    bool detectaD = señalDerSuave >= umbralDer;
+
+    if (!detectaI && !detectaC && !detectaD) {
+        return 0;
+    }
+
+    float margenI = detectaI ? (señalIzqSuave - umbralIzq) : -1;
+    float margenC = detectaC ? (señalCenSuave - umbralCen) : -1;
+    float margenD = detectaD ? (señalDerSuave - umbralDer) : -1;
+
+    if (margenC >= margenI && margenC >= margenD) return 2;
+    if (margenI >= margenC && margenI >= margenD) return 1;
+    if (margenD >= margenC && margenD >= margenI) return 3;
+
+    return 0;
+}
+
+void moverMotores(int velIzq, int velDer) {
+    // los motores están cableados invertidos 
+    velIzq = -velIzq;
+    velDer = -velDer;
+
+    if (velIzq > LIMITE_PWM) velIzq = LIMITE_PWM;
+    if (velIzq < -LIMITE_PWM) velIzq = -LIMITE_PWM;
+    if (velDer > LIMITE_PWM) velDer = LIMITE_PWM;
+    if (velDer < -LIMITE_PWM) velDer = -LIMITE_PWM;
+
+    // --- Motor Izquierdo (B) ---
+    if (velIzq >= 0) {
+        digitalWrite(BIN1, HIGH); digitalWrite(BIN2, LOW); analogWrite(PWMB, velIzq);
+    } else {
+        digitalWrite(BIN1, LOW); digitalWrite(BIN2, HIGH); analogWrite(PWMB, -velIzq); 
+    }
+    // --- Motor Derecho (A) ---
+    if (velDer >= 0) {
+        digitalWrite(AIN1, HIGH); digitalWrite(AIN2, LOW); analogWrite(PWMA, velDer);
+    } else {
+        digitalWrite(AIN1, LOW); digitalWrite(AIN2, HIGH); analogWrite(PWMA, -velDer);
+    }
+}
+
+void enviarMensajeBLE(String mensaje) {
+    if (deviceConnected) {
+        mensaje += "\n"; 
+        pCharacteristicTX->setValue(mensaje.c_str());
+        pCharacteristicTX->notify();
+    }
+}
+
+void mostrarEstrategiaEnLEDs(int numero) {
+    digitalWrite(LED_IZQ, (numero & 1) ? HIGH : LOW);
+    digitalWrite(LED_CEN, (numero & 2) ? HIGH : LOW);
+    digitalWrite(LED_DER, (numero & 4) ? HIGH : LOW);
+}
