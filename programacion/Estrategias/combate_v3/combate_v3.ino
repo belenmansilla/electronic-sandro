@@ -50,7 +50,7 @@ int estrategiaSeleccionada = 0;
 int LIMITE_PWM = 210;
 
 // Motores 
-int VEL_BUSQUEDA_E1 = 80;
+int VEL_BUSQUEDA_E1 = 40;
 int VEL_BUSQUEDA_E2 = 100;
 int VEL_BUSQUEDA_E3 = 150;
 
