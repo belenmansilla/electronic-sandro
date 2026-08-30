@@ -106,7 +106,7 @@ int señalDerActual = 0;
 int faseE1 = 0; unsigned long tiempoFaseE1 = 0; int direccionE1 = 0;
 int faseE2 = 0; unsigned long tiempoFaseE2 = 0; int direccionE2 = 0;
 int faseE3 = 0; unsigned long tiempoFaseE3 = 0; int direccionE3 = 0;
--
+
 // fase: 0=leer/decidir, 1=girando (decisivo), 2=avanzando derecho tras el giro
 int faseE4 = 0;
 unsigned long tiempoFaseE4 = 0;
@@ -122,6 +122,19 @@ int lecturasConsecutivasE5 = 0;
 
 int faseE6 = 0;
 unsigned long tiempoFaseE6 = 0;
+
+
+// --- Estrategia 7: Flanqueo por la derecha (embestida por atrás) ---
+int faseE7 = 0; // 0=buscar, 1=arco de flanqueo, 2=verificar, 3=embestida
+unsigned long tiempoFaseE7 = 0;
+int ultimaLecturaE7 = 0;
+int lecturasConsecutivasE7 = 0;
+
+#define DURACION_FLANQUEO_MS 500      // cuánto dura el arco. ----- CALIBRACION -----
+int VEL_FLANQUEO_EXT = 150;           // rueda exterior del arco (más rápida)
+int VEL_FLANQUEO_INT = 110;            // rueda interior del arco (más lenta -> hace doblar a la derecha)
+int VEL_EMBESTIDA_E7_MAX = 200;
+#define TIEMPO_RAMPA_EMBESTIDA_E7_MS 400
 
 #define DURACION_AVANCE_CUADRADO_MS 800  // cuánto dura cada lado del cuadrado. ----- CALIBRACION -----
 #define DURACION_GIRO_90_MS 300          // cuánto tarda en girar realmente 90° con VEL_GIRO. ----- CALIBRACION -----
@@ -284,6 +297,12 @@ void loop() {
                     estadoRobot = 1;
                     enviarMensajeBLE("Estrategia 6: Patrulla Cuadrado. Esperando PLAY...");
                 }
+                else if (codigo == 0xBD42FF00) { // BOTON 7- Flanqueo por la derecha
+                estrategiaSeleccionada = 7;
+                mostrarEstrategiaEnLEDs(estrategiaSeleccionada);
+                estadoRobot = 1; // pasa por la cuenta regresiva de 5s igual que las demás
+                enviarMensajeBLE("Estrategia 7: Flanqueo derecha. Esperando PLAY...");
+            }
                 else if (codigo == 0xBC43FF00) { // BOTON "E/R" 
                     estadoRobot = 3; 
                     digitalWrite(LED_DER, HIGH);
@@ -352,6 +371,7 @@ void loop() {
                 else if (estrategiaSeleccionada == 4) rutinaSeguimiento();
                 else if (estrategiaSeleccionada == 5) rutinaEmbestidaAgresiva();
                 else if (estrategiaSeleccionada == 6) rutinaCuadrado();
+                else if (estrategiaSeleccionada == 7) rutinaFlanqueoDerecha(); 
             }
             break;
             
@@ -399,6 +419,12 @@ void loop() {
                     mostrarEstrategiaEnLEDs(estrategiaSeleccionada);
                     estadoRobot = 1;
                     enviarMensajeBLE("Estrategia 6: Patrulla Cuadrado. Esperando PLAY...");
+                }
+                else if (codigo == 0xBD42FF00) { // BOTON 7 - Flanqueo por la derecha
+                    estrategiaSeleccionada = 7;
+                    mostrarEstrategiaEnLEDs(estrategiaSeleccionada);
+                    estadoRobot = 1; // pasa por la cuenta regresiva de 5s igual que las demás
+                    enviarMensajeBLE("Estrategia 7: Flanqueo derecha. Esperando PLAY...");
                 }
                 else if (codigo == 0xBC43FF00) {
                     estadoRobot = 0;
@@ -775,6 +801,90 @@ void rutinaCuadrado() {
 }
 
 // ==================================================
+// ESTRATEGIA 7: Flanqueo por la derecha (embestida por atrás)
+// ==================================================
+void rutinaFlanqueoDerecha() {
+    int lineaIzq = digitalRead(PIN_LINEA_IZQ);
+    int lineaDer = digitalRead(PIN_LINEA_DER);
+    if (lineaIzq == SENSOR_LINEA || lineaDer == SENSOR_LINEA) {
+        moverMotores(-100, -100); delay(200);
+        moverMotores(100, -100);  delay(300);
+        faseE7 = 0;
+        lecturasConsecutivasE7 = 0;
+        return;
+    }
+
+    unsigned long ahora = millis();
+
+    if (faseE7 == 0) { // LEER Y DECIDIR
+        int pos = buscarOponenteSuave();
+
+        if (pos != 0 && pos == ultimaLecturaE7) lecturasConsecutivasE7++;
+        else lecturasConsecutivasE7 = (pos != 0) ? 1 : 0;
+        ultimaLecturaE7 = pos;
+
+        if (pos == 0) { // barrido buscando, igual que E4/E5
+            if (ahora - tiempoBarrido > TIEMPO_BARRIDO_E4_MS) {
+                direccionBarrido = -direccionBarrido;
+                tiempoBarrido = ahora;
+            }
+            if (direccionBarrido == 1) moverMotores(VEL_SEGUIMIENTO_E4, VEL_SEGUIMIENTO_E4 - VEL_CORRECCION_BARRIDO_E4);
+            else moverMotores(VEL_SEGUIMIENTO_E4 - VEL_CORRECCION_BARRIDO_E4, VEL_SEGUIMIENTO_E4);
+            return;
+        }
+
+        if (lecturasConsecutivasE7 < LECTURAS_PARA_CONFIRMAR) return;
+        lecturasConsecutivasE7 = 0;
+
+        if (pos == 3) {
+            // Detectado a la derecha -> arranca el arco de flanqueo
+            faseE7 = 1;
+            tiempoFaseE7 = ahora;
+        }
+        else if (pos == 2) {
+            // De frente -> directo a embestir
+            faseE7 = 3;
+            tiempoFaseE7 = ahora;
+        }
+        else { // pos == 1, izquierda: giro normal (no requiere flanqueo)
+            moverMotores(-VEL_GIRO, VEL_GIRO);
+        }
+    }
+    else if (faseE7 == 1) { // ARCO: avanza curveando hacia la derecha
+        moverMotores(VEL_FLANQUEO_INT, VEL_FLANQUEO_EXT);
+        if (ahora - tiempoFaseE7 >= DURACION_FLANQUEO_MS) {
+            faseE7 = 2;
+            tiempoFaseE7 = ahora;
+        }
+    }
+    else if (faseE7 == 2) { // VERIFICAR SI YA QUEDÓ DETRÁS DEL RIVAL
+        int pos = buscarOponente();
+        if (pos == 2) {
+            faseE7 = 3;             // quedó de frente -> ahí está su espalda
+            tiempoFaseE7 = ahora;
+        } else if (pos == 1 || pos == 3) {
+            faseE7 = 1;              // se corrió, repite el arco
+            tiempoFaseE7 = ahora;
+        } else {
+            faseE7 = 0;              // lo perdió, vuelve a buscar
+        }
+    }
+    else if (faseE7 == 3) { // EMBESTIDA con rampa de velocidad
+        int pos = buscarOponenteSuave();
+        if (pos == 2) {
+            unsigned long transcurrido = ahora - tiempoFaseE7;
+            if (transcurrido > (unsigned long)TIEMPO_RAMPA_EMBESTIDA_E7_MS) transcurrido = TIEMPO_RAMPA_EMBESTIDA_E7_MS;
+            int velocidadActual = VEL_SEGUIMIENTO_E4 +
+                (long)(VEL_EMBESTIDA_E7_MAX - VEL_SEGUIMIENTO_E4) * transcurrido / TIEMPO_RAMPA_EMBESTIDA_E7_MS;
+            moverMotores(velocidadActual, velocidadActual);
+        } else {
+            faseE7 = 0;
+            lecturasConsecutivasE7 = 0;
+        }
+    }
+}
+
+// ==================================================
 // 3: Resto funciones
 // ==================================================
 
@@ -906,12 +1016,12 @@ void moverMotores(int velIzq, int velDer) {
     } else {
         digitalWrite(BIN1, LOW); digitalWrite(BIN2, HIGH); analogWrite(PWMB, -velIzq); 
     }
-    // --- Motor Derecho (A) ---
-    if (velDer >= 0) {
-        digitalWrite(AIN1, HIGH); digitalWrite(AIN2, LOW); analogWrite(PWMA, velDer);
-    } else {
-        digitalWrite(AIN1, LOW); digitalWrite(AIN2, HIGH); analogWrite(PWMA, -velDer);
-    }
+        // --- Motor Derecho (A) ---
+        if (velDer >= 0) {
+            digitalWrite(AIN1, LOW); digitalWrite(AIN2, HIGH); analogWrite(PWMA, velDer);
+        } else {
+            digitalWrite(AIN1, HIGH); digitalWrite(AIN2, LOW); analogWrite(PWMA, -velDer);
+}
 }
 
 void enviarMensajeBLE(String mensaje) {
